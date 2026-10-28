@@ -1,0 +1,45 @@
+# Local Python environment and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+secrets*.json
+
+# Operational data and generated project output
+data/**
+projects/**
+logs/**
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+*.tmp
+
+# Build products and local editor settings
+build/
+dist/
+*.egg-info/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Generated acceptance/reproduction evidence
+docs/*acceptance*/
+docs/calculator_retests/
+docs/*acceptance*.json
+docs/*reproduction*.json
+docs/*verification_*.json

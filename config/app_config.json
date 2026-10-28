@@ -1,0 +1,52 @@
+{
+  "app": {
+    "name": "ITNI_AI_TEAM",
+    "version": "1.5.0"
+  },
+  "paths": {
+    "root": ".",
+    "data": "data",
+    "database": "data/database",
+    "projects": "projects",
+    "knowledge": "knowledge",
+    "logs": "logs"
+  },
+  "ai": {
+    "provider": "ollama",
+    "base_url": "http://localhost:11434",
+    "default_model": "gemma4:e2b",
+    "local_first": true,
+    "cloud_requires_representative_approval": true,
+    "max_reworks": 2,
+    "options": {
+      "num_ctx": 8192,
+      "num_predict": 4096
+    },
+    "vllm": {
+      "base_url": "http://localhost:8000/v1",
+      "default_model": "gemma4:12b",
+      "options": {
+        "max_tokens": 4096,
+        "temperature": 0.2
+      }
+    }
+  },
+  "verification": {
+    "images": {
+      "python": "sha256:7f889df54e9089435d923c2816cb9ae4f1dbbc09e924ecc9876e458b04726184",
+      "gui": "sha256:456ed549fa7128f7733deae3a95b3ff47eb0f56d083f8d04b0cb4ae66e1509e8"
+    }
+  },
+  "gemini": {
+    "model": "gemini-3.8-flash",
+    "external_search_enabled": true
+  },
+  "organization": {
+    "chief_agent_id": "AGT-CHIEF-001",
+    "basic_agents": [
+      "Chief of Staff",
+      "QA"
+    ],
+    "dynamic_work_agents": true
+  }
+}
