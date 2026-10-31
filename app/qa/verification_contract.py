@@ -31,8 +31,11 @@ def validate_contract(value):
             raise ValueError('required_categories는 normal/invalid/boundary 중 중복 없는 목록이어야 합니다.')
         requirement_ids.add(requirement['id'])
     for check in checks:
-        if not isinstance(check,dict) or not isinstance(check.get('id'),str) or not check['id'] or not isinstance(check.get('kind'),str):
-            raise ValueError('검증 항목에는 고유 id와 kind가 필요합니다.')
+        if not isinstance(check,dict):
+            raise ValueError('검증 항목은 id와 kind를 가진 JSON 객체여야 합니다.')
+        missing = [name for name in ('id', 'kind') if not isinstance(check.get(name), str) or not check[name].strip()]
+        if missing:
+            raise ValueError(f'검증 항목 {len(ids)+1}: 비어 있지 않은 문자열 필드가 필요합니다: {", ".join(missing)}')
         if check['id'] in ids:raise ValueError('검증 ID가 중복되었습니다.')
         ids.add(check['id'])
         if not isinstance(check.get('target'),str):raise ValueError('검증 대상 target이 필요합니다.')

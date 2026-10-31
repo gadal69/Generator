@@ -64,7 +64,10 @@ class VllmAdapter:
         except Exception:
             return False
 
-    def generate(self, prompt, images=None):
+    def generate_json(self, prompt, schema):
+        return self.generate(prompt, response_schema=schema)
+
+    def generate(self, prompt, images=None, response_schema=None):
         self.last_response = {}
         if images:
             raise ValueError('현재 vLLM 어댑터는 이미지 입력을 지원하지 않습니다. 지원되는 엔진을 선택하세요.')
@@ -88,6 +91,8 @@ class VllmAdapter:
         if 'chat_template_kwargs' in self.request_options:
             payload['chat_template_kwargs'] = self.request_options['chat_template_kwargs']
 
+        if response_schema is not None:
+            payload["response_format"] = {"type": "json_schema", "json_schema": {"name": "verification_plan", "schema": response_schema}}
         response = requests.post(
             f"{self.base_url}/chat/completions",
             json=payload,

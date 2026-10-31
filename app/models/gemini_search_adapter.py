@@ -51,6 +51,8 @@ class GeminiSearchAdapter:
             )
         except Exception as exc:
             raise RuntimeError(f"Gemini Google 검색에 실패했습니다: {exc}") from exc
+        finally:
+            client.close()
         text = str(getattr(response, "output_text", "") or "").strip()
         if not text:
             raise RuntimeError("Gemini 검색 응답이 비어 있습니다. 검색 조건이나 모델 설정을 확인하세요.")
@@ -71,13 +73,16 @@ class GeminiSearchAdapter:
             from google import genai
         except ImportError as exc:
             raise RuntimeError("Install the Gemini SDK with: python -m pip install --upgrade google-genai") from exc
+        client = genai.Client(api_key=self.api_key)
         try:
-            response = genai.Client(api_key=self.api_key).interactions.create(
+            response = client.interactions.create(
                 model=self.model,
                 input=str(prompt),
             )
         except Exception as exc:
             raise RuntimeError(f"Gemini task generation failed: {exc}") from exc
+        finally:
+            client.close()
         text = str(getattr(response, "output_text", "") or "").strip()
         if not text:
             raise RuntimeError("Gemini returned an empty task result.")

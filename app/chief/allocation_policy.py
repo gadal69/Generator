@@ -42,8 +42,11 @@ def developer_key(value):
 
 def enforce_allocation(decision,request):
     """Idempotent policy applied before confirmation and again before execution."""
+    from app.chief.domain_analysis import enrich_analysis
+    decision = enrich_analysis(decision, request)
     if decision.workflow_type!='standard':return decision
     if is_file_creation_request(request):decision.file_creation_required=True
+    if decision.work_domains and "개발" not in decision.work_domains:return decision
     if not decision.file_creation_required:return decision
     decision.direct_execution=False
     roles=decision.core_roles if isinstance(decision.core_roles,list) else [decision.core_roles]

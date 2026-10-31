@@ -30,5 +30,12 @@ class ChiefDecision:
     task_assignments: List[Dict] = field(default_factory=list)
     acceptance_criteria: List[str] = field(default_factory=list)
     verification_contract: Dict = field(default_factory=dict)
+    verification_plan_required: bool = False
+    verification_plan_attempts: List[Dict] = field(default_factory=list)
+    analysis_issues: List[Dict] = field(default_factory=list)
+    requirements_ready: bool = True
+    work_domains: List[str] = field(default_factory=list)
+    tool_requests: List[Dict] = field(default_factory=list)
+    clarification_questions: List[str] = field(default_factory=list)
     integration_role: str = ""
     def to_dict(self): return asdict(self)

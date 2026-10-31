@@ -42,4 +42,7 @@ class ControlledAdapter:
     def __getattr__(self,name):return getattr(self.adapter,name)
     def generate(self,prompt,images=None):
         return self.control.call(lambda:self.adapter.generate(prompt) if images is None else self.adapter.generate(prompt,images=images))
+    def generate_json(self, prompt, schema):
+        operation = getattr(self.adapter, 'generate_json', None)
+        return self.control.call(lambda: operation(prompt, schema) if callable(operation) else self.adapter.generate(prompt))
     def search(self,prompt):return self.control.call(lambda:self.adapter.search(prompt))

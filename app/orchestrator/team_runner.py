@@ -73,8 +73,12 @@ class TeamRunner:
                 gateway=CloudGateway(self.database,self.approval_gate,
                     adapter_factory=(lambda: gemini_adapter) if gemini_adapter else None,
                     approval_required=self._cloud_approval_required())
-                adapter=gateway.request_or_adapter(project_id,purpose,scope,data_scope,
-                    approval_id=existing[0] if existing and existing[2]=="APPROVED" else None)
+                try:
+                    adapter=gateway.request_or_adapter(project_id,purpose,scope,data_scope,
+                        approval_id=existing[0] if existing and existing[2]=="APPROVED" else None)
+                except CloudApprovalRequired as exc:
+                    exc.local_decision = local_decision.to_dict()
+                    raise
                 if gemini_adapter is None:
                     readiness = GeminiSearchAdapter.dependency_status()
                     missing = []
@@ -114,6 +118,10 @@ class TeamRunner:
                 decision=recovered
                 analysis_members=TeamComposer('PRJ-ANALYSIS',self.registry,model=model).compose(decision.core_roles,decision.specialists)
                 self._build_plan(original_request,decision,analysis_members,source_request=original_request)
+            from app.chief.verification_plan import repair_plan
+            if decision.file_creation_required:
+                decision.verification_plan_required = True
+                decision=repair_plan(decision, original_request, self.adapter_factory(model), supplied=verification_contract)
             decision.verification_contract=build_contract(original_request,verification_contract,decision.verification_contract)
             decision.runtime_requirements.extend(inspect_verification_environment(
                 decision.verification_contract,self._load_app_config().get('verification',{})))
@@ -192,6 +200,11 @@ class TeamRunner:
             decision.runtime_requirements = inspect_request(original_request, decision.to_dict())+inspect_verification_environment(
                 decision.verification_contract,self._load_app_config().get('verification',{}))
             decision=enforce_allocation(decision,original_request)
+            from app.chief.verification_plan import plan_gaps
+            if decision.verification_plan_required and decision.file_creation_required and plan_gaps(decision.verification_contract):
+                raise ValueError("확인한 분석에 요구사항·검증 항목이 누락되었습니다. 보완 후 다시 분석하세요.")
+            if not decision.requirements_ready:
+                raise ValueError("요구사항 확인이 필요합니다. 분석 단계에서 답변 후 다시 분석하세요.\n" + "\n".join(decision.clarification_questions))
             decision.core_roles, decision.specialists = ChiefPlanner._deduplicate_roles(
                 decision.core_roles, decision.specialists
             )

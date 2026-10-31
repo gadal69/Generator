@@ -11,6 +11,7 @@ from pathlib import Path
 from qtpy import QtCore, QtGui, QtWidgets
 
 from app.chief.approval_gate import ApprovalGate
+from app.models.cloud_gateway import CloudApprovalRequired
 from app.models.adapter_factory import create_local_adapter
 from app.models.fake_multi_agent_adapter import FakeMultiAgentAdapter
 from app.models.ollama_adapter import OllamaAdapter
@@ -337,6 +338,11 @@ class RunWorker(QtCore.QThread):
                 max_reworks=saved.get('max_reworks') if self.mode=='resume' else None,
             )
             self.succeeded.emit(result)
+        except CloudApprovalRequired as exc:
+            self.succeeded.emit({"mode": "analyze", "request": self.request,
+                "chief_decision": getattr(exc, "local_decision", {}),
+                "cloud_pending": True, "cloud_approval_id": exc.approval_id,
+                "gemini_review": self.gemini_review, "gemini_code_review": self.gemini_code_review})
         except RunCancelled:
             self.succeeded.emit({'status':'CANCELLED','mode':self.mode})
         except Exception as exc:
@@ -557,6 +563,14 @@ class Dashboard(QtWidgets.QMainWindow):
         refresh_button.setFixedHeight(38)
         refresh_button.clicked.connect(self.refresh_data)
         header.addWidget(refresh_button)
+        self.help_button = QtWidgets.QPushButton("도움말")
+        self.help_button.setFixedHeight(38)
+        self.help_button.clicked.connect(self.show_help)
+        header.addWidget(self.help_button)
+        self.exit_button = QtWidgets.QPushButton("종료")
+        self.exit_button.setFixedHeight(38)
+        self.exit_button.clicked.connect(self.close)
+        header.addWidget(self.exit_button)
         content_layout.addLayout(header)
 
         control_bar = QtWidgets.QFrame()
@@ -788,6 +802,10 @@ class Dashboard(QtWidgets.QMainWindow):
         self.decision_summary.setPlaceholderText("업무를 분석하면 실행 판단, 구성 에이전트와 역할, 업무 단계를 표시합니다.")
         self.decision_summary.setMinimumHeight(190)
         request_layout.addWidget(self.decision_summary, 1)
+        self.review_supplement_button = QtWidgets.QPushButton("보완문 확인·복사·재분석")
+        self.review_supplement_button.setEnabled(False)
+        self.review_supplement_button.clicked.connect(self.review_analysis_supplement)
+        request_layout.addWidget(self.review_supplement_button)
         body_layout.addWidget(request_panel, 1)
         return page
 
@@ -900,6 +918,19 @@ class Dashboard(QtWidgets.QMainWindow):
                 table.setItem(row_no, col_no, item)
         table.resizeRowsToContents()
 
+    def show_help(self):
+        QtWidgets.QMessageBox.information(self, "사용 도움말",
+            "1. Ollama와 사용할 모델을 준비하고 업무지시를 입력합니다.\n"
+            "2. 비서실장 업무 분석에서 요구사항·담당자·검증 기준을 확인합니다.\n"
+            "3. 필요한 경우 보완문 확인·복사·재분석을 이용합니다.\n"
+            "4. Gemini 승인 대기는 대표 승인 화면에서 전송 범위를 확인해 승인합니다.\n"
+            "5. 분석 완료 후 분석 확인 후 실행을 누릅니다.\n"
+            "6. 필수 검사 통과 후 최종 승인합니다. Docker 검증에는 실행 중인 Docker 엔진이 필요합니다.\n\n"
+            "결과 파일: projects/<프로젝트ID>/artifacts/\n"
+            "새로고침: 승인 목록과 상태 갱신 (재분석·재실행 아님).\n"
+            "분석중 버튼 재클릭 또는 중단: 취소 요청.\n"
+            "종료: 작업 중이면 중단을 요청하고 작업 종료 후 창을 닫습니다.")
+
     def refresh_data(self):
         try:
             self._refresh_approvals()
@@ -930,14 +961,14 @@ class Dashboard(QtWidgets.QMainWindow):
         conn = self.db.connect()
         try:
             for row in conn.execute("""SELECT m.approval_id,m.project_id,p.name,m.purpose,m.scope,m.data_scope,m.estimated_cost,m.status,m.created_at,
-                (SELECT user_request FROM team_runs t WHERE t.project_id=m.project_id ORDER BY started_at DESC LIMIT 1)
+                COALESCE((SELECT NULLIF(TRIM(user_request),'') FROM team_runs t WHERE t.project_id=m.project_id ORDER BY started_at DESC LIMIT 1), NULLIF(TRIM(p.description),''))
                 FROM model_approvals m LEFT JOIN projects p ON p.project_id=m.project_id ORDER BY m.created_at DESC LIMIT 100"""):
                 key = "cloud:" + row[0]
                 details[key] = {"type":"클라우드 접근", "id":row[0], "project_id":row[1], "project_name":row[2] or "프로젝트명 없음",
                     "request":row[9] or "업무 요청 내용 없음", "reason":row[3] or "클라우드 AI 처리가 요청되었습니다.",
                     "status":row[7], "scope":row[4], "data_scope":row[5], "cost":row[6], "created":row[8]}
             for row in conn.execute("""SELECT a.approval_id,a.project_id,p.name,a.task_id,a.result_id,a.status,a.created_at,r.summary,
-                (SELECT user_request FROM team_runs t WHERE t.project_id=a.project_id ORDER BY started_at DESC LIMIT 1),
+                COALESCE((SELECT NULLIF(TRIM(user_request),'') FROM team_runs t WHERE t.project_id=a.project_id ORDER BY started_at DESC LIMIT 1), NULLIF(TRIM(p.description),'')),
                 (SELECT summary FROM qa_reviews q WHERE q.task_id=a.task_id ORDER BY q.created_at DESC LIMIT 1)
                 FROM approvals a LEFT JOIN projects p ON p.project_id=a.project_id LEFT JOIN results r ON r.result_id=a.result_id
                 ORDER BY a.created_at DESC LIMIT 100"""):
@@ -948,6 +979,7 @@ class Dashboard(QtWidgets.QMainWindow):
             conn.close()
         self._approval_details = details
         ordered = sorted(details.items(), key=lambda item:(item[1]["status"] != "PENDING", item[1]["created"] or ""))
+        selection_blocker = QtCore.QSignalBlocker(self.approvals_table)
         self.approvals_table.clearContents()
         self.approvals_table.setRowCount(len(ordered))
         for row_index, (key, item) in enumerate(ordered):
@@ -1034,7 +1066,16 @@ class Dashboard(QtWidgets.QMainWindow):
                 f"처리 범위: {detail.get('scope', '')}\n"
                 f"대상 데이터: {detail.get('data_scope', '')}"
             )
-        self.approval_result.setPlainText(header + result_text)
+        content = header + result_text
+        same_result = getattr(self, '_displayed_approval_key', None) == approval_key
+        if not same_result or self.approval_result.toPlainText() != content:
+            vertical = self.approval_result.verticalScrollBar().value()
+            horizontal = self.approval_result.horizontalScrollBar().value()
+            self.approval_result.setPlainText(content)
+            if same_result:
+                self.approval_result.verticalScrollBar().setValue(vertical)
+                self.approval_result.horizontalScrollBar().setValue(horizontal)
+        self._displayed_approval_key = approval_key
 
     @staticmethod
     def _short_text(value, limit):
@@ -1089,6 +1130,19 @@ class Dashboard(QtWidgets.QMainWindow):
                 ApprovalGate(self.db).decide(detail["id"], status, comment)
             else:
                 Orchestrator(self.db).approve(detail["id"], status, comment)
+            if detail["type"] == "클라우드 접근" and detail.get("scope") == "chief_cross_review":
+                same_request = self.request_input.toPlainText().strip() == detail.get("request", "").strip()
+                current_approval = getattr(self, '_analysis_cloud_approval_id', None)
+                if status == "APPROVED" and same_request and (not current_approval or current_approval == detail["id"]):
+                    self.refresh_data()
+                    if self.worker and self.worker.isRunning():
+                        self.run_state.setText("Gemini 승인 완료 · 현재 작업 종료 후 다시 분석해 주세요.")
+                    else:
+                        self.analyze_request()
+                    return
+                self.run_state.setText("Gemini 승인 완료 · 해당 업무를 다시 분석해 주세요." if status == "APPROVED" else "Gemini 검토 반려 · 옵션을 해제한 뒤 로컬 분석할 수 있습니다.")
+                self.refresh_data()
+                return
             self.run_state.setText("승인 처리 완료" if status == "APPROVED" else "반려 처리 완료")
             self.refresh_data()
             if status == "APPROVED" and detail["type"] == "클라우드 접근" and self.last_result and self.last_result.get("project_id") == detail["project_id"]:
@@ -1193,6 +1247,11 @@ class Dashboard(QtWidgets.QMainWindow):
             self._stage='중단 처리 중';self._show_elapsed()
 
     def _worker_finished(self):
+        if getattr(self, '_analysis_cancel_requested', False):
+            self._analysis_cancel_requested = False
+            self.run_button.setText("비서실장 업무 분석")
+            self.run_button.setEnabled(True)
+            self.run_state.setText("분석을 취소했습니다. 다시 분석할 수 있습니다.")
         self.elapsed_timer.stop();self.cancel_button.setEnabled(False);self.resume_button.setEnabled(True)
         self.model_selector.setEnabled(True);self.engine_selector.setEnabled(True)
         if getattr(self,'_closing',False):self.close()
@@ -1243,6 +1302,19 @@ class Dashboard(QtWidgets.QMainWindow):
         self._start_worker()
 
     def analyze_request(self):
+        if self.worker and self.worker.isRunning():
+            if self.worker.mode == "analyze" and not getattr(self, '_analysis_cancel_requested', False):
+                self._analysis_cancel_requested = True
+                self.worker.request_cancel()
+                self.pending_analysis = None
+                self.execute_button.setEnabled(False)
+                self.run_button.setText("비서실장 업무 분석")
+                self.run_button.setEnabled(False)
+                self.cancel_button.setEnabled(False)
+                self._stage = '분석 취소 처리 중'
+                self._show_elapsed()
+            return
+        self._analysis_cancel_requested = False
         request = self.request_input.toPlainText().strip()
         if not request and not self.selected_images:
             self.run_state.setText("업무 지시를 입력하거나 이미지를 첨부해 주세요.")
@@ -1256,8 +1328,8 @@ class Dashboard(QtWidgets.QMainWindow):
         self.analysis_request = request
         self.analysis_images = list(self.selected_images)
         self.execute_button.setEnabled(False)
-        self.run_button.setEnabled(False)
-        self.run_button.setText("분석 중…")
+        self.run_button.setEnabled(True)
+        self.run_button.setText("분석중")
         if self.selected_images and self.request_input.toPlainText().strip():
             self.run_state.setText(f"텍스트 요구사항과 이미지 {len(self.selected_images)}개를 함께 분석하고 있습니다.")
         elif self.selected_images:
@@ -1315,6 +1387,8 @@ class Dashboard(QtWidgets.QMainWindow):
         self._start_worker()
 
     def _run_succeeded(self, result):
+        if getattr(self, '_analysis_cancel_requested', False):
+            result = {'status': 'CANCELLED', 'mode': 'analyze'}
         if getattr(self,'_closing',False):return
         if hasattr(self,'elapsed_timer'):self.elapsed_timer.stop()
         self.health_button.setEnabled(True)
@@ -1361,6 +1435,26 @@ class Dashboard(QtWidgets.QMainWindow):
                 "image_analysis": result.get("image_analysis"),
                 "mode": "analyze",
             })
+            if result.get("cloud_pending"):
+                self._analysis_cloud_approval_id = result.get("cloud_approval_id")
+                self.execute_button.setText("Gemini 승인 후 분석 완료 필요")
+                self.pending_analysis = None
+                self.execute_button.setEnabled(False)
+                self.run_button.setEnabled(True)
+                self.run_button.setText("다시 분석")
+                self.run_state.setText("로컬 분석 완료 · Gemini 승인 대기. 승인 목록에서 승인 후 다시 분석하세요.")
+                self.refresh_data()
+                return
+            if not self.pending_analysis.get('requirements_ready', True):
+                plan_error = any(item.get('kind') == 'PLAN_ERROR' for item in self.pending_analysis.get('analysis_issues', []))
+                self.run_state.setText("검증 계획 생성 실패 · 분석창의 원인과 다음 조치를 확인하세요." if plan_error else
+                    "추가 정보 필요 · 분석창의 구체적인 질문을 확인해 주세요.")
+                self.run_button.setEnabled(True)
+                self.run_button.setText("비서실장 업무 분석")
+                self.execute_button.setEnabled(False)
+                self.execute_button.setText("검증 계획 보완 필요" if plan_error else "추가 답변 필요")
+                return
+            self._analysis_cloud_approval_id = None
             self.run_state.setText("업무 분석 완료 · 내용을 확인한 뒤 실행을 누르세요.")
             self.run_button.setEnabled(True)
             self.run_button.setText("다시 분석")
@@ -1487,6 +1581,16 @@ class Dashboard(QtWidgets.QMainWindow):
         )
         participants = list(dict.fromkeys(participants))
         lines = [f"AI 분석 방식: {mode}"]
+        for issue in decision.get('analysis_issues', []):
+            title = '추가 정보 필요' if issue.get('kind') == 'NEEDS_INPUT' else '검증 계획 생성 실패'
+            lines.extend([title + ': ' + issue.get('reason', ''), '다음 조치: ' + issue.get('action', '')])
+        if decision.get("work_domains"):
+            lines.append("업무 분야: " + ", ".join(decision["work_domains"]))
+        for tool in decision.get("tool_requests", []):
+            lines.append(f"필요 도구: {tool['name']} · {tool['status']} · 목적: {tool['purpose']}")
+            lines.append(f"대안: {tool['alternative']} · {tool['approval']}")
+        for question in decision.get("clarification_questions", []):
+            lines.append("확인 요청: " + question)
         if decision.get("cloud_ai_required"):
             lines.append("Gemini 전송 범위: " + str(decision.get("cloud_data_scope") or "분석된 업무 요청"))
             lines.append("Gemini 사용 목적: " + str(decision.get("cloud_purpose") or "업무 결과 생성") + "; 예상 비용: " + str(decision.get("estimated_cost") or "미산정"))
@@ -1560,8 +1664,54 @@ class Dashboard(QtWidgets.QMainWindow):
                           '입력 유형: normal=정상 / invalid=잘못된 입력 / boundary=경계값'])
             lines.extend(['','검증 계약 · 실행 확인 시 아래 검증 기준도 확정됩니다:',
                           json.dumps(decision['verification_contract'],ensure_ascii=False,indent=2)])
+        from app.chief.analysis_feedback import verification_feedback
+        lines.extend(verification_feedback(decision, result.get('request') or self.analysis_request or ''))
         lines.extend(["", "QA 에이전트가 결과를 검토합니다."])
+        from app.chief.analysis_feedback import reanalysis_draft, verification_feedback
+        needs_review = bool(decision.get('analysis_issues') or not decision.get('requirements_ready', True)
+                            or verification_feedback(decision))
+        self._analysis_supplement = reanalysis_draft(decision, result.get('request') or self.analysis_request or '') if needs_review else ''
+        self.review_supplement_button.setEnabled(needs_review)
+        if needs_review:
+            lines = ['【대표 확인 필요】보완 대상과 제안을 확인한 뒤 아래 「보완문 확인·복사·재분석」을 이용하세요.',
+                     '【실행 순서】보완문 확인 → 업무지시 반영 → 재분석 완료 → 분석 확인 후 실행'] + lines
         self.decision_summary.setPlainText("\n".join(lines))
+
+    def review_analysis_supplement(self):
+        if self.worker and self.worker.isRunning():
+            self.run_state.setText("현재 작업이 끝난 뒤 보완문을 확인해 주세요.")
+            return
+        draft = getattr(self, '_analysis_supplement', '')
+        if not draft:
+            return
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("대표 확인 — 보완 제안을 수정한 뒤 반영하세요")
+        dialog.resize(800, 600)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.addWidget(QtWidgets.QLabel("추가 조건은 제안입니다. 원문과 충돌하는 내용을 삭제·수정하세요. 반영 후 재분석하며 바로 실행하지 않습니다."))
+        editor = QtWidgets.QPlainTextEdit()
+        editor.setPlainText(draft)
+        layout.addWidget(editor)
+        buttons = QtWidgets.QHBoxLayout()
+        copy_button = QtWidgets.QPushButton("수정한 문장 복사")
+        copy_button.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(editor.toPlainText()))
+        apply_button = QtWidgets.QPushButton("확인한 문장 반영 후 재분석")
+        def apply():
+            content = editor.toPlainText().strip()
+            if not content:
+                return
+            self.pending_analysis = None
+            self.execute_button.setEnabled(False)
+            self.request_input.setPlainText(content)
+            dialog.accept()
+            self.analyze_request()
+        apply_button.clicked.connect(apply)
+        close_button = QtWidgets.QPushButton("닫기")
+        close_button.clicked.connect(dialog.reject)
+        for button in (copy_button, apply_button, close_button):
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        dialog.exec()
 
     def add_images(self, paths):
         previous_images = list(self.selected_images)
@@ -1631,6 +1781,9 @@ class Dashboard(QtWidgets.QMainWindow):
         return f"실행 상태: {status}"
 
     def _run_failed(self, message):
+        if getattr(self, '_analysis_cancel_requested', False):
+            self._run_succeeded({'status': 'CANCELLED', 'mode': 'analyze'})
+            return
         if getattr(self,'_closing',False):return
         if hasattr(self,'elapsed_timer'):self.elapsed_timer.stop()
         self.health_button.setEnabled(True)

@@ -62,7 +62,10 @@ class OllamaAdapter:
         data = self.health()
         return any(m.get("name") == self.model for m in data.get("models", []))
 
-    def generate(self, prompt, images=None):
+    def generate_json(self, prompt, schema):
+        return self.generate(prompt, response_schema=schema)
+
+    def generate(self, prompt, images=None, response_schema=None):
         self.last_response = {}
         if not prompt or not str(prompt).strip():
             raise ValueError("Ollama prompt가 비어 있습니다.")
@@ -85,6 +88,8 @@ class OllamaAdapter:
                     raise ValueError(f"이미지 파일이 20MB를 초과합니다: {path.name}")
                 encoded.append(base64.b64encode(path.read_bytes()).decode("ascii"))
             payload["images"] = encoded
+        if response_schema is not None:
+            payload["format"] = response_schema
         response = requests.post(
             f"{self.base_url}/api/generate",
             json=payload,

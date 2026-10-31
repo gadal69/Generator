@@ -1,3 +1,4 @@
+from app.chief.domain_analysis import DOMAIN_INSTRUCTION
 from app.agents.base_agent import BaseAgent
 from app.chief.chief_planner import ChiefPlanner
 from app.chief.chief_decision import ChiefDecision
@@ -29,7 +30,7 @@ class ChiefAgent(BaseAgent):
             "Supported checks: python_function (function,cases:[{args,expected} or {args,error:true,error_type:optional exact exception class name}]), json_value (path array,expected), text (contains/not_contains lists or equals), file, command (argv list,expected exit_code/stdout,runtime). Use error_type when the representative requires a specific exception. "
             "For PySide6 GUI use gui: target module, factory callable returning a window, actions [{action:click|input|open_file|save_file,widget:objectName,text or path}], widgets [{widget,property,expected}], outputs optional. File dialogs are injected selections; native dialog and screen review are NOT_RUN separately. Give widgets stable objectName values. Other GUI frameworks remain unsupported/NOT_RUN. "
             "For edited images use image_output with argv and outputs:[{path,format:PNG,size:[width,height],pixels:[{xy:[x,y],rgb:[r,g,b]}]}]. Include multiple representative pixels that distinguish the requested edit, not only file existence. Use gui outputs with the same schema for GUI saves. Add required visual_review checks for visual requirements: these remain NOT_RUN pending screen review. GUI/Pillow dependencies and OS libraries must exist in the verified Docker image; never install on host. ")
-        prompt=("You are the Chief of Staff for the representative. " + ALLOCATION_INSTRUCTION +
+        prompt=("You are the Chief of Staff for the representative. " + ALLOCATION_INSTRUCTION + DOMAIN_INSTRUCTION +
                 "The only permanent organizational roles are Chief of Staff and QA. "
                 "Use local Ollama by default. Set cloud_ai_required=true only when the task cannot be completed adequately with available local models or requires an unavailable cloud capability; complexity or polished writing alone is not sufficient. "
                 "The Chief model itself must not call a cloud provider. When public external research is requested, the execution layer may use the configured Gemini Google Search adapter; keep that search limited to public query text and provide citations. For any other cloud-model use, specify purpose, narrow task scope, data scope, and estimated cost so the representative can approve it first. "
@@ -39,7 +40,7 @@ class ChiefAgent(BaseAgent):
                 "Include library_requirements as a list of {package, version, purpose, runtime}. Use an exact version only when required and known; otherwise version must be an empty string for environment resolution. Use plain PyPI distribution names for runtime python, plain npm package names for runtime node; explain purpose in Korean. List only external packages actually needed by the chosen implementation, not standard library modules or speculative alternatives. Use [] when none are needed. Never claim installation occurred. "
                 + verification_instruction +
                 "Use representative-supplied expectations first. Label unverified requirements honestly; never claim model review is program execution. Do not add unauthorized output files or select host executables, Docker images, credentials or network permissions. "
-                "Fields: core_roles, specialists, integration_role (one assigned developer role for code requests, empty otherwise), required_capabilities, rationale, priority, execution_mode (model provider only: local or cloud), cloud_ai_required (boolean), cloud_purpose, cloud_scope, cloud_data_scope, estimated_cost, work_summary, work_steps, acceptance_criteria (list of testable requirements), task_assignments (list of {role, deliverable, files}). Each output file must have exactly one owner. Never invent additional output files when the representative names the required files; a single-file request must stay a single file. Designers may implement UI code when assigned those files. Supporting agents deliver bounded handoff information rather than duplicating the entire program. For a small single-file program, prefer one implementation owner; add other roles only for a distinct necessary deliverable. Include a software developer for integration. "
+                "Fields: core_roles, specialists, integration_role (one assigned developer role for code requests, empty otherwise), required_capabilities, rationale, priority, execution_mode (model provider only: local or cloud), cloud_ai_required (boolean), cloud_purpose, cloud_scope, cloud_data_scope, estimated_cost, work_summary, work_steps, acceptance_criteria (list of testable requirements), task_assignments (list of {role, deliverable, files}). Each output file must have exactly one owner. Never invent additional output files when the representative names the required files; a single-file request must stay a single file. Designers may implement UI code when assigned those files. Supporting agents deliver bounded handoff information rather than duplicating the entire program. For a small single-file program, prefer one implementation owner; add other roles only for a distinct necessary deliverable. Include a software developer for integration only for software implementation requests. "
                 "execution_mode describes where AI inference runs, not where task data comes from. A locally generated program may still call an external public API or website. Keep execution_mode local whenever cloud_ai_required is false. "
                 "For every instruction that names a public website/API and requests search, retrieval, or collection, explicitly state the source and preferred access method (official API first), whether this task requests a generated integration program or an immediate lookup, and that no data was actually retrieved unless an available tool executed the request.\nRepresentative instruction:\n"+request)
         try:
@@ -83,17 +84,16 @@ class ChiefAgent(BaseAgent):
             + "\n\nGemini 독립 검토 결과:\n"
             + str(gemini_review)
         )
-        text = model_adapter.generate(prompt)
-        match = re.search(r"\{.*\}", text or "", re.S)
-        if not match:
-            raise RuntimeError("로컬 비서실장의 Gemini·로컬 분석 종합 결과가 유효한 JSON이 아닙니다.")
-        try:
-            response = json.loads(match.group(0))
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("로컬 비서실장의 분석 종합 JSON을 해석할 수 없습니다.") from exc
-        if not isinstance(response, dict) or not str(response.get("comparison_summary", "")).strip():
-            raise RuntimeError("최종 분석에 두 모델의 공통점·차이점 비교 요약이 없습니다.")
-        decision = self.planner.parse_llm(text, local_decision)
+        from app.chief.synthesis_output import synthesize_json
+        from app.qa.verification_contract import explicit_contract
+        authoritative = explicit_contract(request)
+        def parse(response):
+            decision = self.planner.parse_llm(json.dumps(response, ensure_ascii=False), local_decision,
+                verification_contract=authoritative)
+            if decision.source != 'LLM' and local_decision.workflow_type == 'standard':
+                raise ValueError('종합 분석을 해석하지 못해 이전 분석으로 대체되었습니다. 새 종합 결과가 필요합니다.')
+            return decision
+        response, decision = synthesize_json(model_adapter, prompt, parse)
         decision.cloud_ai_required = local_decision.cloud_ai_required
         decision.cloud_purpose = local_decision.cloud_purpose
         decision.cloud_scope = local_decision.cloud_scope
